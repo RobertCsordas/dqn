@@ -70,10 +70,19 @@ class DQN:
             for d in self.loader:
                 self.prefetch_queue.put({k: v.to(self.device) for k, v in d.items()})
 
+    def reset(self) -> np.ndarray:
+        frame = self.env.reset()
+        for _ in range(np.random.randint(0, NOOP_MAX + 1)):
+            frame, _, done, _ = self.env.step(self.noop_index)
+            if done:
+                return self.reset()
+
+        return frame
+
     def play(self, get_action: Callable[[int, List[np.ndarray]], int], train: bool, step_hook = lambda: None, maxlen=MAXLEN):
         total_reward = 0
 
-        observation = self.preprocess_frame(self.env.reset())
+        observation = self.preprocess_frame(self.reset())
         all_frames = [observation]*4
 
         for t in range(maxlen):
@@ -151,13 +160,7 @@ class DQN:
         return max(e_start - (e_start - e_end)/n * self.game_steps, e_end)
 
     def get_action(self, iteration: int, observations: List[np.ndarray], train: bool=True) -> int:
-        epsilon = self.get_epsilon()
-        if train and iteration==0:
-            self.n_noop = np.random.randint(0, NOOP_MAX+1)
-
-        if train and iteration < self.n_noop:
-            return self.noop_index
-        elif train and (np.random.random() < epsilon):
+        if train and (np.random.random() < self.get_epsilon()):
             return self.env.action_space.sample()
         else:
             with torch.no_grad():
