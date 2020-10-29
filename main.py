@@ -126,7 +126,10 @@ class DQN:
         pred = self.net(frames[:,:-1])
         pred = pred.gather(index=action, dim=1)
         with torch.no_grad():
-            next_value, _ = self.predictor(frames[:, 1:]).max(-1, keepdim=True)
+            # Double DQN update: choose best action to bootstrap against from the predictor model
+            next_value = self.net(frames[:, 1:])
+            _, next_value_target_index = self.predictor(frames[:, 1:]).max(-1, keepdim=True)
+            next_value = torch.gather(next_value, 1, next_value_target_index)
 
         target = gamma*next_value*(1.0-data["is_done"].float()) + data["reward"]
         l = self.loss(pred, target)
