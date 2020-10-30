@@ -6,6 +6,7 @@ import torch.utils.data
 import numpy as np
 from src.replay_buffer import ReplayBuffer
 from src.network import AtariNet
+from src.atari_wrapper import DeepmindHackWrapper
 from copy import deepcopy
 import time
 import wandb
@@ -39,7 +40,7 @@ class DQN:
     def __init__(self, env: str):
         self.device = torch.device("cuda")
 
-        self.env = gym.make(env)
+        self.env = DeepmindHackWrapper(gym.make(env), NOOP_MAX)
         self.noop_index = self.env.unwrapped.get_action_meanings().index("NOOP")
         self.n_actions = self.env.action_space.n
         self.img_shape = self.preprocess_frame(self.env.reset()).shape
@@ -70,34 +71,30 @@ class DQN:
             for d in self.loader:
                 self.prefetch_queue.put({k: v.to(self.device) for k, v in d.items()})
 
-    def reset(self) -> np.ndarray:
-        frame = self.env.reset()
-        for _ in range(np.random.randint(0, NOOP_MAX + 1)):
-            frame, _, done, _ = self.env.step(self.noop_index)
-            if done:
-                return self.reset()
-
-        return frame
-
     def play(self, get_action: Callable[[int, List[np.ndarray]], int], train: bool, step_hook = lambda: None, maxlen=MAXLEN):
         total_reward = 0
+        all_frames = []
 
-        observation = self.preprocess_frame(self.reset())
-        all_frames = [observation]*4
+        while True:
+            observation = self.preprocess_frame(self.env.reset())
+            all_frames += [observation] * 4
 
-        for t in range(maxlen):
-            action = get_action(t, all_frames[-4:])
-            new_frame, reward, done, info = self.env.step(action)
-            if train:
-                self.memory.add(observation, action, reward, done)
-                self.game_steps += 1
+            for t in range(maxlen):
+                action = get_action(t, all_frames[-4:])
+                new_frame, reward, done, info = self.env.step(action)
+                if train:
+                    self.memory.add(observation, action, reward, done)
+                    self.game_steps += 1
 
-            observation = self.preprocess_frame(new_frame)
-            all_frames.append(observation)
-            total_reward += reward
+                observation = self.preprocess_frame(new_frame)
+                all_frames.append(observation)
+                total_reward += reward
 
-            step_hook()
-            if done:
+                step_hook()
+                if done:
+                    break
+
+            if train or self.env.was_done:
                 break
 
         return total_reward, all_frames
@@ -135,10 +132,7 @@ class DQN:
         pred = self.net(frames[:,:-1])
         pred = pred.gather(index=action, dim=1)
         with torch.no_grad():
-            # Double DQN update: choose best action to bootstrap against from the predictor model
-            next_value = self.net(frames[:, 1:])
-            _, next_value_target_index = self.predictor(frames[:, 1:]).max(-1, keepdim=True)
-            next_value = torch.gather(next_value, 1, next_value_target_index)
+            next_value, _ = self.net(frames[:, 1:]).max(-1, keepdim=True)
 
         target = gamma*next_value*(1.0-data["is_done"].float()) + data["reward"]
         l = self.loss(pred, target)
